@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import sys
 import singer
 from singer import metadata
@@ -15,10 +16,39 @@ LOGGER = singer.get_logger()
 REQUIRED_CONFIG_KEYS = [
     "client_id",
     "client_secret",
-    "location_guid",
-    "start_date",
-    "management_group_guid"
+    "pc_numbers",
+    "start_date"
 ]
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MAPPING_FILE = os.path.join(PROJECT_ROOT, '.secrets', 'pc_to_guid_mapping.json')
+
+
+def load_pc_to_guid_mapping():
+    if not os.path.exists(MAPPING_FILE):
+        raise FileNotFoundError(
+            f"PC to GUID mapping file not found at: {MAPPING_FILE}\n"
+            f"Generate it by running the partners API curl command and saving to .secrets/pc_to_guid_mapping.json"
+        )
+    with open(MAPPING_FILE) as f:
+        mapping = json.load(f)
+    return {item['pc_number']: item for item in mapping}
+
+
+def resolve_locations(pc_numbers, mapping):
+    resolved = []
+    missing = []
+    for pc in pc_numbers:
+        if pc in mapping:
+            resolved.append(mapping[pc])
+        else:
+            missing.append(pc)
+    if missing:
+        raise ValueError(
+            f"PC numbers not found in mapping file: {missing}\n"
+            f"Available PC numbers: {list(mapping.keys())}"
+        )
+    return resolved
 
 
 def do_discover(client):
@@ -86,19 +116,47 @@ def do_sync(client, catalog, state):
 def main():
     parsed_args = singer.utils.parse_args(REQUIRED_CONFIG_KEYS)
 
-    creds = {
-        "client_id": parsed_args.config['client_id'],
-        "client_secret": parsed_args.config['client_secret'],
-        "location_guid": parsed_args.config['location_guid'],
-        "start_date": parsed_args.config['start_date'],
-        "management_group_guid": parsed_args.config['management_group_guid']
-    }
+    pc_numbers = parsed_args.config['pc_numbers']
+    if isinstance(pc_numbers, str):
+        pc_numbers = [pc_numbers]
 
-    client = Toast(**creds)
+    mapping = load_pc_to_guid_mapping()
+    locations = resolve_locations(pc_numbers, mapping)
+
     Context.config = parsed_args.config
 
     if parsed_args.discover:
+        first_location = locations[0]
+        creds = {
+            "client_id": parsed_args.config['client_id'],
+            "client_secret": parsed_args.config['client_secret'],
+            "location_guid": first_location['restaurant_guid'],
+            "management_group_guid": first_location['management_group_guid'],
+            "start_date": parsed_args.config['start_date']
+        }
+        client = Toast(**creds)
         do_discover(client)
     elif parsed_args.catalog:
         state = parsed_args.state or {}
-        do_sync(client, parsed_args.catalog, state)
+
+        for location in locations:
+            location_guid = location['restaurant_guid']
+            management_group_guid = location['management_group_guid']
+            pc_number = location['pc_number']
+
+            LOGGER.info("Syncing location: %s (%s)", location.get('location_name', pc_number), pc_number)
+
+            Context.location_guid = location_guid
+
+            creds = {
+                "client_id": parsed_args.config['client_id'],
+                "client_secret": parsed_args.config['client_secret'],
+                "location_guid": location_guid,
+                "management_group_guid": management_group_guid,
+                "start_date": parsed_args.config['start_date']
+            }
+
+            client = Toast(**creds)
+            do_sync(client, parsed_args.catalog, state)
+
+        singer.write_state(state)

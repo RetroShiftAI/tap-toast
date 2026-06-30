@@ -47,12 +47,21 @@ class Stream():
 
 
     def get_bookmark(self, state):
-        return (singer.get_bookmark(state, self.name, self.replication_key)) or Context.config["start_date"]
+        location_guid = self.client.location_guid if self.client else None
+        if location_guid:
+            location_bookmarks = singer.get_bookmark(state, self.name, location_guid)
+            if location_bookmarks and self.replication_key in location_bookmarks:
+                return location_bookmarks[self.replication_key]
+        return Context.config["start_date"]
 
 
     def update_bookmark(self, state, value):
         if self.is_bookmark_old(state, value):
-            singer.write_bookmark(state, self.name, self.replication_key, value)
+            location_guid = self.client.location_guid if self.client else None
+            if location_guid:
+                location_bookmarks = singer.get_bookmark(state, self.name, location_guid) or {}
+                location_bookmarks[self.replication_key] = value
+                singer.write_bookmark(state, self.name, location_guid, location_bookmarks)
 
 
     def is_bookmark_old(self, state, value):
