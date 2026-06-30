@@ -43,7 +43,6 @@ class Toast(object):
         self.location_guid = location_guid
         self.management_group_guid = management_group_guid
         self.start_date = utils.strptime_with_tz(start_date)
-        self.grant_type = 'client_credentials'
         self.authorization_token = None
         self.fmt_date_time = '%Y-%m-%dT%H:%M:%S.%Z'
         self.fmt_date = '%Y%m%d'
@@ -93,12 +92,12 @@ class Toast(object):
 
 
     def get_authorization_token(self):
-        payload = { 'grant_type': self.grant_type, 'client_id': self.client_id, 'client_secret': self.client_secret }
-        response = requests.post(self._url('usermgmt/v1/oauth/token'), data=payload)
+        payload = { 'clientId': self.client_id, 'clientSecret': self.client_secret, 'userAccessType': 'TOAST_MACHINE_CLIENT' }
+        response = requests.post(self._url('authentication/v1/authentication/login'), json=payload)
         response.raise_for_status()
         res = response.json()
         logger.info('Authorization successful.')
-        self.authorization_token = res['access_token']
+        self.authorization_token = res['token']['accessToken']
 
 
     # column_name, bookmark
