@@ -17,11 +17,13 @@ def sync_stream(state, instance):
                 record = transformer.transform(record, stream.schema.to_dict(), metadata.to_map(stream.metadata))
 
             singer.write_record(stream.tap_stream_id, record)
-            # NB: We will only write state at the end of a stream's sync:
-            #  We may find out that there exists a sync that takes too long and can never emit a bookmark
-            #  but we don't know if we can guarentee the order of emitted records.
+
+            if counter.value % 1000 == 0:
+                singer.logger.info('%s: Processed %s records', stream.tap_stream_id, counter.value)
 
         if instance.replication_method == "INCREMENTAL":
             singer.write_state(state)
+
+        singer.logger.info('%s: Total records synced: %s', stream.tap_stream_id, counter.value)
 
         return counter.value

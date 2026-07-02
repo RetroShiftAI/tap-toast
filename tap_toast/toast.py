@@ -12,9 +12,32 @@ import logging
 import pytz
 import sys
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 logger = logging.getLogger()
 utc = pytz.UTC
+
+class ProgressTracker:
+    def __init__(self, total_hours):
+        self.total_hours = total_hours
+        self.completed_hours = 0
+        self.total_orders_fetched = 0
+        self.lock = threading.Lock()
+
+    def increment_hour(self, orders_in_hour):
+        with self.lock:
+            self.completed_hours += 1
+            self.total_orders_fetched += orders_in_hour
+            pct = (self.completed_hours / self.total_hours * 100) if self.total_hours > 0 else 0
+            logger.info(
+                'Progress: [{}/{} hours] ({:.1f}%) - {} orders fetched so far'.format(
+                    self.completed_hours,
+                    self.total_hours,
+                    pct,
+                    self.total_orders_fetched
+                )
+            )
 
 
 
@@ -131,26 +154,89 @@ class Toast(object):
 
     def orders(self, column_name=None, bookmark=None):
         business_date = utils.strptime_with_tz(bookmark).strftime(self.fmt_date_time)
-        for (start_hour, end_hour) in get_start_end_hour(utils.strptime_with_tz(business_date), datetime.now(pytz.utc)):
-            logger.info('Hitting orders endpoint at date {date}'.format(date=start_hour))
-            res = self._get(self._url('orders/v2/orders/'), startDate=start_hour, endDate=end_hour)
-            logger.info('Returned {number} orders.'.format(number=len(res)))
-            for item in res:
-                yield self._get(self._url('orders/v2/orders/{order_guid}'.format(order_guid=item)))[0]
+        hours = list(get_start_end_hour(utils.strptime_with_tz(business_date), datetime.now(pytz.utc)))
+        total_hours = len(hours)
+
+        logger.info('Starting orders sync: {} hours to process'.format(total_hours))
+
+        progress = ProgressTracker(total_hours)
+        max_workers = 10
+
+        def fetch_order_details(order_guid):
+            guid = order_guid if isinstance(order_guid, str) else order_guid.get('guid')
+            if not guid:
+                return None
+            try:
+                order_data = self._get(self._url('orders/v2/orders/{order_guid}'.format(order_guid=guid)))
+                if order_data:
+                    return order_data[0]
+            except Exception as e:
+                logger.warning('Failed to fetch order {}: {}'.format(guid, e))
+            return None
+
+        for (start_hour, end_hour) in hours:
+            logger.info('Fetching order GUIDs for hour: {}'.format(start_hour))
+            order_guids = self._get(self._url('orders/v2/orders/'), startDate=start_hour, endDate=end_hour)
+            logger.info('Found {} orders in hour {}'.format(len(order_guids), start_hour))
+
+            current_hour_orders = []
+            if order_guids:
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {executor.submit(fetch_order_details, guid): guid for guid in order_guids}
+                    for future in as_completed(futures):
+                        order = future.result()
+                        if order is not None:
+                            current_hour_orders.append(order)
+
+            progress.increment_hour(len(order_guids))
+
+            for order in current_hour_orders:
+                yield order
 
 
     def payments(self, column_name=None, bookmark=None):
-        # cycle through paidBusinessDate, refundBusinessDate, and voidBusinessDate
         business_date = utils.strptime_with_tz(bookmark).strftime(self.fmt_date)
-        for single_date in daterange(utils.strptime_with_tz(business_date), datetime.now(pytz.utc)):
-            logger.info('Hitting endpoint at date {date}'.format(date=single_date))
+        dates = list(daterange(utils.strptime_with_tz(business_date), datetime.now(pytz.utc)))
+        total_dates = len(dates)
+
+        logger.info('Starting payments sync: {} dates to process'.format(total_dates))
+
+        progress = ProgressTracker(total_dates)
+        max_workers = 10
+
+        def fetch_payment_details(payment_guid):
+            guid = payment_guid if isinstance(payment_guid, str) else payment_guid.get('guid')
+            if not guid:
+                return None
+            try:
+                payment_data = self._get(self._url('orders/v2/payments/{payment_guid}'.format(payment_guid=guid)))
+                if payment_data:
+                    return payment_data[0]
+            except Exception as e:
+                logger.warning('Failed to fetch payment {}: {}'.format(guid, e))
+            return None
+
+        for single_date in dates:
+            logger.info('Fetching payments for date: {}'.format(single_date))
             paid_res = self._get(self._url('orders/v2/payments'), paidBusinessDate=single_date.strftime(self.fmt_date))
             refund_res = self._get(self._url('orders/v2/payments'), refundBusinessDate=single_date.strftime(self.fmt_date))
             void_res = self._get(self._url('orders/v2/payments'), voidBusinessDate=single_date.strftime(self.fmt_date))
             res = paid_res + refund_res + void_res
-            logger.info('Returned {number} payments.'.format(number=len(res)))
-            for item in res:
-                yield self._get(self._url('orders/v2/payments/{payment_guid}'.format(payment_guid=item)))[0]
+            logger.info('Found {} payments for date {}'.format(len(res), single_date))
+
+            current_date_payments = []
+            if res:
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = {executor.submit(fetch_payment_details, guid): guid for guid in res}
+                    for future in as_completed(futures):
+                        payment = future.result()
+                        if payment is not None:
+                            current_date_payments.append(payment)
+
+            progress.increment_hour(len(res))
+
+            for payment in current_date_payments:
+                yield payment
 
 
     def alternate_payment_types(self, column_name=None, bookmark=None):

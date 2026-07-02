@@ -20,6 +20,7 @@ import subprocess
 import sys
 import os
 import logging
+import threading
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -72,23 +73,27 @@ def parse_singer_messages(output_lines):
             else:
                 records_and_schemas.append(line)
         except json.JSONDecodeError:
-            # Non-JSON lines (e.g., log output to stdout)
             records_and_schemas.append(line)
 
     return records_and_schemas, last_state
 
 
+def stream_output(proc, output_lines):
+    """Stream stderr output in real-time for progress visibility."""
+    for line in proc.stderr:
+        line = line.strip()
+        if line:
+            print(line, file=sys.stderr, flush=True)
+
+
 def run_tap(config_file, catalog_file, state_file, output_file=None):
     """Run tap-toast with state persistence."""
 
-    # Load current state
     state = load_state(state_file)
 
-    # Write state to a temporary file for the tap to read
     state_input_file = state_file + '.input'
     save_state(state_input_file, state)
 
-    # Build command
     cmd = [
         'tap-toast',
         '--config', config_file,
@@ -99,36 +104,33 @@ def run_tap(config_file, catalog_file, state_file, output_file=None):
     logger.info(f"Running: {' '.join(cmd)}")
 
     try:
-        # Run tap-toast and capture all output
-        result = subprocess.run(
+        proc = subprocess.Popen(
             cmd,
-            capture_output=True,
-            text=True,
-            timeout=86400  # 24 hour timeout
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
         )
 
-        # Parse output
-        all_lines = result.stdout.split('\n')
+        stderr_thread = threading.Thread(target=stream_output, args=(proc, []))
+        stderr_thread.start()
+
+        stdout_data, _ = proc.communicate(timeout=86400)
+        stderr_thread.join(timeout=5)
+
+        all_lines = stdout_data.split('\n')
         records_and_schemas, new_state = parse_singer_messages(all_lines)
 
-        # Log any errors
-        if result.stderr:
-            logger.error(f"Tap stderr: {result.stderr}")
-
-        if result.returncode != 0:
-            logger.error(f"Tap exited with code {result.returncode}")
-            # Still save state if we got any, so we can resume
+        if proc.returncode != 0:
+            logger.error(f"Tap exited with code {proc.returncode}")
             if new_state:
                 save_state(state_file, new_state)
-            raise subprocess.CalledProcessError(result.returncode, cmd)
+            raise subprocess.CalledProcessError(proc.returncode, cmd)
 
-        # Save the new state
         if new_state:
             save_state(state_file, new_state)
         else:
             logger.warning("No STATE message found in output")
 
-        # Write non-STATE messages to output file or stdout
         if output_file:
             os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
             with open(output_file, 'w') as f:
@@ -139,7 +141,6 @@ def run_tap(config_file, catalog_file, state_file, output_file=None):
             for line in records_and_schemas:
                 print(line)
 
-        # Clean up temp state input file
         if os.path.exists(state_input_file):
             os.remove(state_input_file)
 
@@ -147,7 +148,7 @@ def run_tap(config_file, catalog_file, state_file, output_file=None):
 
     except subprocess.TimeoutExpired:
         logger.error("Tap timed out after 24 hours")
-        # Try to save any state we captured
+        proc.kill()
         if os.path.exists(state_input_file):
             os.remove(state_input_file)
         raise
