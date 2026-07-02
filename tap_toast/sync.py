@@ -1,9 +1,12 @@
 
 import sys
+import logging
 import singer
 import singer.metrics as metrics
 from singer import metadata
 from singer import Transformer
+
+logger = logging.getLogger(__name__)
 
 
 def sync_stream(state, instance):
@@ -19,11 +22,11 @@ def sync_stream(state, instance):
             singer.write_record(stream.tap_stream_id, record)
 
             if counter.value % 1000 == 0:
-                singer.logger.info('%s: Processed %s records', stream.tap_stream_id, counter.value)
+                logger.info('%s: Processed %s records', stream.tap_stream_id, counter.value)
 
         if instance.replication_method == "INCREMENTAL":
             singer.write_state(state)
 
-        singer.logger.info('%s: Total records synced: %s', stream.tap_stream_id, counter.value)
+        logger.info('%s: Total records synced: %s', stream.tap_stream_id, counter.value)
 
         return counter.value
