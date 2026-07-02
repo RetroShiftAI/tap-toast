@@ -154,6 +154,30 @@
                     "null",
                     "string"
                   ]
+                },
+                "salesCategoryPlu": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "seatNumber": {
+                  "type": [
+                    "null",
+                    "integer"
+                  ]
+                },
+                "selectionType": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
+                },
+                "splitOrigin": {
+                  "type": [
+                    "null",
+                    "string"
+                  ]
                 }
               }
             }

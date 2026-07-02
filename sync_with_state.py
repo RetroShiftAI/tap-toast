@@ -20,7 +20,6 @@ import subprocess
 import sys
 import os
 import logging
-import threading
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -78,14 +77,6 @@ def parse_singer_messages(output_lines):
     return records_and_schemas, last_state
 
 
-def stream_output(proc, output_lines):
-    """Stream stderr output in real-time for progress visibility."""
-    for line in proc.stderr:
-        line = line.strip()
-        if line:
-            print(line, file=sys.stderr, flush=True)
-
-
 def run_tap(config_file, catalog_file, state_file, output_file=None):
     """Run tap-toast with state persistence."""
 
@@ -107,39 +98,35 @@ def run_tap(config_file, catalog_file, state_file, output_file=None):
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=sys.stderr,
             text=True
         )
 
-        stderr_thread = threading.Thread(target=stream_output, args=(proc, []))
-        stderr_thread.start()
-
         stdout_data, _ = proc.communicate(timeout=86400)
-        stderr_thread.join(timeout=5)
 
         all_lines = stdout_data.split('\n')
         records_and_schemas, new_state = parse_singer_messages(all_lines)
-
-        if proc.returncode != 0:
-            logger.error(f"Tap exited with code {proc.returncode}")
-            if new_state:
-                save_state(state_file, new_state)
-            raise subprocess.CalledProcessError(proc.returncode, cmd)
-
-        if new_state:
-            save_state(state_file, new_state)
-        else:
-            logger.warning("No STATE message found in output")
 
         if output_file:
             os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
             with open(output_file, 'w') as f:
                 for line in records_and_schemas:
                     f.write(line + '\n')
-            logger.info(f"Output written to {output_file}")
+            logger.info(f"Output written to {output_file} ({len(records_and_schemas)} lines)")
         else:
             for line in records_and_schemas:
                 print(line)
+
+        if new_state:
+            save_state(state_file, new_state)
+        else:
+            logger.warning("No STATE message found in output")
+
+        if proc.returncode != 0:
+            logger.error(f"Tap exited with code {proc.returncode}")
+            if os.path.exists(state_input_file):
+                os.remove(state_input_file)
+            raise subprocess.CalledProcessError(proc.returncode, cmd)
 
         if os.path.exists(state_input_file):
             os.remove(state_input_file)
