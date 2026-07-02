@@ -5,10 +5,10 @@ Wrapper script for tap-toast that handles state persistence.
 This script:
 1. Reads the last state from a state file
 2. Runs tap-toast with that state
-3. Captures all output (RECORD, SCHEMA, STATE messages)
-4. Extracts the final STATE message
-5. Updates the state file with the latest state
-6. Writes non-STATE messages to stdout for downstream targets
+3. Streams output in real-time to the output file
+4. Tracks the latest STATE message for state persistence
+5. Updates the state file after sync completes or crashes
+6. On resume, appends to the output file from where it left off
 
 Usage:
     python sync_with_state.py --config config.json --catalog catalog.json --state state.json --output output.jsonl
@@ -55,30 +55,8 @@ def save_state(state_file, state):
         raise
 
 
-def parse_singer_messages(output_lines):
-    """Parse Singer messages from output lines, separating STATE from other messages."""
-    records_and_schemas = []
-    last_state = None
-
-    for line in output_lines:
-        line = line.strip()
-        if not line:
-            continue
-
-        try:
-            message = json.loads(line)
-            if isinstance(message, dict) and message.get('type') == 'STATE':
-                last_state = message.get('value')
-            else:
-                records_and_schemas.append(line)
-        except json.JSONDecodeError:
-            records_and_schemas.append(line)
-
-    return records_and_schemas, last_state
-
-
 def run_tap(config_file, catalog_file, state_file, output_file=None):
-    """Run tap-toast with state persistence."""
+    """Run tap-toast with state persistence and real-time output streaming."""
 
     state = load_state(state_file)
 
@@ -94,7 +72,16 @@ def run_tap(config_file, catalog_file, state_file, output_file=None):
 
     logger.info(f"Running: {' '.join(cmd)}")
 
+    output_fp = None
+    record_count = 0
+    last_state = None
+
     try:
+        if output_file:
+            os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
+            output_fp = open(output_file, 'a')
+            logger.info(f"Streaming output to {output_file}")
+
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -102,23 +89,38 @@ def run_tap(config_file, catalog_file, state_file, output_file=None):
             text=True
         )
 
-        stdout_data, _ = proc.communicate(timeout=86400)
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
 
-        all_lines = stdout_data.split('\n')
-        records_and_schemas, new_state = parse_singer_messages(all_lines)
+            try:
+                message = json.loads(line)
+                if isinstance(message, dict) and message.get('type') == 'STATE':
+                    last_state = message.get('value')
+                else:
+                    if output_fp:
+                        output_fp.write(line + '\n')
+                        output_fp.flush()
+                        record_count += 1
+                    else:
+                        print(line)
+            except json.JSONDecodeError:
+                if output_fp:
+                    output_fp.write(line + '\n')
+                    output_fp.flush()
+                    record_count += 1
+                else:
+                    print(line)
 
-        if output_file:
-            os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
-            with open(output_file, 'w') as f:
-                for line in records_and_schemas:
-                    f.write(line + '\n')
-            logger.info(f"Output written to {output_file} ({len(records_and_schemas)} lines)")
-        else:
-            for line in records_and_schemas:
-                print(line)
+        proc.wait()
 
-        if new_state:
-            save_state(state_file, new_state)
+        if output_fp:
+            output_fp.flush()
+            logger.info(f"Output streamed to {output_file} ({record_count} lines)")
+
+        if last_state:
+            save_state(state_file, last_state)
         else:
             logger.warning("No STATE message found in output")
 
@@ -136,14 +138,21 @@ def run_tap(config_file, catalog_file, state_file, output_file=None):
     except subprocess.TimeoutExpired:
         logger.error("Tap timed out after 24 hours")
         proc.kill()
+        if output_fp:
+            output_fp.close()
         if os.path.exists(state_input_file):
             os.remove(state_input_file)
         raise
     except Exception as e:
         logger.error(f"Failed to run tap: {e}")
+        if output_fp:
+            output_fp.close()
         if os.path.exists(state_input_file):
             os.remove(state_input_file)
         raise
+    finally:
+        if output_fp and not output_fp.closed:
+            output_fp.close()
 
 
 def main():
