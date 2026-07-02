@@ -132,7 +132,10 @@ def run_tap(config_file, catalog_file, state_file, output_file=None):
             try:
                 message = json.loads(line)
                 if isinstance(message, dict) and message.get('type') == 'STATE':
+                    logger.info("STATE message received (has bookmarks: %s)", 'bookmarks' in message.get('value', {}))
                     last_state = message.get('value')
+                    if last_state is not None:
+                        save_state(state_file, last_state)
                 elif isinstance(message, dict) and message.get('type') == 'RECORD':
                     record = message.get('record', {})
                     guid = record.get('guid')
@@ -171,7 +174,7 @@ def run_tap(config_file, catalog_file, state_file, output_file=None):
             output_fp.flush()
             logger.info(f"Output streamed to {output_file} ({record_count} new records, {duplicate_count} duplicates skipped)")
 
-        if last_state:
+        if last_state is not None:
             save_state(state_file, last_state)
         else:
             logger.warning("No STATE message found in output")
@@ -203,6 +206,8 @@ def run_tap(config_file, catalog_file, state_file, output_file=None):
             os.remove(state_input_file)
         raise
     finally:
+        if last_state is not None:
+            save_state(state_file, last_state)
         if output_fp and not output_fp.closed:
             output_fp.close()
 
