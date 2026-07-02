@@ -113,7 +113,7 @@ You can tell the tap to extract specific fields by editing `catalog.json` to mak
 With an annotated `catalog.json`, the tap can be invoked in sync mode:
 
 ```
-$ tap-toast --config config.json --catalog catalog.json
+$ tap-toast --config config.json --catalog catalog.json > output/output.jsonl
 ```
 
 Messages are written to standard output following the Singer specification. The resultant stream of JSON data can be consumed by a Singer target.
