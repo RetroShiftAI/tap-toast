@@ -54,61 +54,25 @@ The `start_date` is just the date you want the sync to begin. You can select thi
 start_date: 2018-11-12T11:00:30+00:00
 ```
 
-### Discovery mode
+### 1- Discovery mode
 
-This command returns a JSON that describes the schema of each table.
 
-```
-$ tap-toast --config config.json --discover
-```
-
-To save this to `catalog.json`:
 
 ```
 $ tap-toast --config config.json --discover > catalog.json
 ```
 
-### Field selection
+### 2- Singer Discover Utility
 
-You can tell the tap to extract specific fields by editing `catalog.json` to make selections. Note the top-level `selected` attribute, as well as the `selected` attribute nested under each property.
+
 
 ```
-{
-  "selected": "true",
-  "properties": {
-    "likes_getting_petted": {
-      "selected": "true",
-      "inclusion": "available",
-      "type": [
-        "null",
-        "boolean"
-      ]
-    },
-    "name": {
-      "selected": "true",
-      "maxLength": 255,
-      "inclusion": "available",
-      "type": [
-        "null",
-        "string"
-      ]
-    },
-    "id": {
-      "selected": "true",
-      "minimum": -2147483648,
-      "inclusion": "automatic",
-      "maximum": 2147483647,
-      "type": [
-        "null",
-        "integer"
-      ]
-    }
-  },
-  "type": "object"
-}
+$ singer-discover --input catalog.json --output catalog.json
 ```
 
-### Sync Mode
+
+
+### 3- Sync Mode
 
 With an annotated `catalog.json`, the tap can be invoked in sync mode:
 
@@ -116,46 +80,7 @@ With an annotated `catalog.json`, the tap can be invoked in sync mode:
 $ tap-toast --config config.json --catalog catalog.json > output/output.jsonl
 ```
 
-Messages are written to standard output following the Singer specification. The resultant stream of JSON data can be consumed by a Singer target.
 
 
-## Replication Methods and State File
 
-### Incremental
 
-The streams that are incremental are:
-
-- orders
-- cash management deposits
-- cash management entries
-- payments
-
-### Full Table
-
-- alternate payment
-- break types
-- cash drawers
-- dining options
-- discounts
-- employees
-- menu groups
-- menu items
-- menu option groups
-- menus
-- no sale reasons
-- payout reasons
-- premodifier groups
-- premodifiers
-- price groups
-- printers
-- restaurant services
-- restaurants
-- revenue centers
-- sales categories
-- service areas
-- tables
-- tax rates
-- tip withholding
-- void reasons
-
-Copyright &copy; 2018 Stitch
