@@ -8,6 +8,8 @@ from singer import Transformer
 
 logger = logging.getLogger(__name__)
 
+STATE_WRITE_INTERVAL = 1000
+
 
 def sync_stream(state, instance):
     stream = instance.stream
@@ -21,8 +23,9 @@ def sync_stream(state, instance):
 
             singer.write_record(stream.tap_stream_id, record)
 
-            if counter.value % 1000 == 0:
+            if counter.value % STATE_WRITE_INTERVAL == 0:
                 logger.info('%s: Processed %s records', stream.tap_stream_id, counter.value)
+                singer.write_state(state)
 
         if instance.replication_method == "INCREMENTAL":
             singer.write_state(state)

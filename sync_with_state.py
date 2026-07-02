@@ -6,9 +6,10 @@ This script:
 1. Reads the last state from a state file
 2. Runs tap-toast with that state
 3. Streams output in real-time to the output file
-4. Tracks the latest STATE message for state persistence
-5. Updates the state file after sync completes or crashes
-6. On resume, appends to the output file from where it left off
+4. Deduplicates records on resume using GUID tracking
+5. Tracks the latest STATE message for state persistence
+6. Updates the state file after sync completes or crashes
+7. On resume, appends to the output file from where it left off
 
 Usage:
     python sync_with_state.py --config config.json --catalog catalog.json --state state.json --output output.jsonl
@@ -55,6 +56,37 @@ def save_state(state_file, state):
         raise
 
 
+def load_existing_guids(output_file):
+    """Load all record GUIDs from existing output file for deduplication on resume."""
+    guids = set()
+    if not os.path.exists(output_file):
+        return guids
+
+    file_size = os.path.getsize(output_file)
+    if file_size == 0:
+        return guids
+
+    logger.info(f"Loading existing record GUIDs from {output_file} for deduplication...")
+
+    with open(output_file, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                message = json.loads(line)
+                if isinstance(message, dict) and message.get('type') == 'RECORD':
+                    record = message.get('record', {})
+                    guid = record.get('guid')
+                    if guid:
+                        guids.add(guid)
+            except json.JSONDecodeError:
+                continue
+
+    logger.info(f"Loaded {len(guids)} existing record GUIDs for deduplication")
+    return guids
+
+
 def run_tap(config_file, catalog_file, state_file, output_file=None):
     """Run tap-toast with state persistence and real-time output streaming."""
 
@@ -74,11 +106,14 @@ def run_tap(config_file, catalog_file, state_file, output_file=None):
 
     output_fp = None
     record_count = 0
+    duplicate_count = 0
     last_state = None
+    existing_guids = set()
 
     try:
         if output_file:
             os.makedirs(os.path.dirname(os.path.abspath(output_file)), exist_ok=True)
+            existing_guids = load_existing_guids(output_file)
             output_fp = open(output_file, 'a')
             logger.info(f"Streaming output to {output_file}")
 
@@ -98,6 +133,23 @@ def run_tap(config_file, catalog_file, state_file, output_file=None):
                 message = json.loads(line)
                 if isinstance(message, dict) and message.get('type') == 'STATE':
                     last_state = message.get('value')
+                elif isinstance(message, dict) and message.get('type') == 'RECORD':
+                    record = message.get('record', {})
+                    guid = record.get('guid')
+
+                    if guid and guid in existing_guids:
+                        duplicate_count += 1
+                        continue
+
+                    if guid:
+                        existing_guids.add(guid)
+
+                    if output_fp:
+                        output_fp.write(line + '\n')
+                        output_fp.flush()
+                        record_count += 1
+                    else:
+                        print(line)
                 else:
                     if output_fp:
                         output_fp.write(line + '\n')
@@ -117,7 +169,7 @@ def run_tap(config_file, catalog_file, state_file, output_file=None):
 
         if output_fp:
             output_fp.flush()
-            logger.info(f"Output streamed to {output_file} ({record_count} lines)")
+            logger.info(f"Output streamed to {output_file} ({record_count} new records, {duplicate_count} duplicates skipped)")
 
         if last_state:
             save_state(state_file, last_state)
