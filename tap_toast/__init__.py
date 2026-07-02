@@ -16,7 +16,6 @@ LOGGER = singer.get_logger()
 REQUIRED_CONFIG_KEYS = [
     "client_id",
     "client_secret",
-    "pc_numbers",
     "start_date"
 ]
 
@@ -49,6 +48,30 @@ def resolve_locations(pc_numbers, mapping):
             f"Available PC numbers: {list(mapping.keys())}"
         )
     return resolved
+
+
+def resolve_config(config):
+    if 'location_guid' in config:
+        management_group_guid = config.get('management_group_guid')
+        if not management_group_guid:
+            raise ValueError("management_group_guid is required when using location_guid")
+        return [{
+            'restaurant_guid': config['location_guid'],
+            'management_group_guid': management_group_guid,
+            'pc_number': config['location_guid'],
+            'location_name': config['location_guid']
+        }]
+    elif 'pc_numbers' in config:
+        pc_numbers = config['pc_numbers']
+        if isinstance(pc_numbers, str):
+            pc_numbers = [pc_numbers]
+        mapping = load_pc_to_guid_mapping()
+        return resolve_locations(pc_numbers, mapping)
+    else:
+        raise ValueError(
+            "Config must include either 'location_guid' (+ 'management_group_guid') "
+            "or 'pc_numbers'"
+        )
 
 
 def do_discover(client):
@@ -116,13 +139,7 @@ def do_sync(client, catalog, state):
 def main():
     parsed_args = singer.utils.parse_args(REQUIRED_CONFIG_KEYS)
 
-    pc_numbers = parsed_args.config['pc_numbers']
-    if isinstance(pc_numbers, str):
-        pc_numbers = [pc_numbers]
-
-    mapping = load_pc_to_guid_mapping()
-    locations = resolve_locations(pc_numbers, mapping)
-
+    locations = resolve_config(parsed_args.config)
     Context.config = parsed_args.config
 
     if parsed_args.discover:
