@@ -80,6 +80,29 @@ With an annotated `catalog.json`, the tap can be invoked in sync mode:
 $ tap-toast --config config.json --catalog catalog.json > output/output.jsonl
 ```
 
+### 4- Sync Mode with State Persistence (Recommended)
+
+To enable resume capability when the process is interrupted or cancelled, use the state persistence wrapper:
+
+```
+$ python sync_with_state.py --config config.json --catalog catalog.json --state state.json --output output/output.jsonl
+```
+
+This wrapper:
+- Reads the current state from `state.json` before starting
+- Passes state to the tap via `--state` flag
+- Captures the final STATE message from output
+- Updates `state.json` automatically after sync completes
+- Allows resuming from where it left off if interrupted
+
+**Initial setup:**
+```
+$ echo '{}' > state.json
+```
+
+**Resume after interruption:**
+Simply run the same command again - it will automatically resume from the last saved state in `state.json`.
+
 
 
 
